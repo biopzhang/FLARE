@@ -48,6 +48,17 @@ class CLIError(Exception):
         return self.msg
 
 
+# PZhang's modification
+def apply_filter(d, f):
+    # brian's filter
+    # Perform the filtering operation
+    f['KNOWN'] = 1
+    names1 = d.columns
+    d = d.merge(f, on=['CHROM', 'POS'], how='left')
+    d = d.loc[d['KNOWN'] != 1, names1]
+    return d
+
+
 def filter_known_snp(infile, known, outfile):
     """
     Step 7: Remove known SNPs
@@ -74,37 +85,59 @@ def filter_known_snp(infile, known, outfile):
                 o.write(line)
     o.close()
 
-    names1 = [
-        'CHROM', 'POS', 'ID', 'REF', 'ALT', 'QUAL', 'FILTER', 'INFO', 'FORMAT',
-        '.'
-    ]
-    eff_df = pd.read_table(infile, comment='#', names=names1,
-                           dtype={'QUAL': str, 'CHROM': str, 'POS': int})
-    if eff_df.shape[0] == 0:
-        print("No edits found for {}".format(infile))
-        return 0
-    names2 = ['CHROM', 'START',
-              'POS']  # POS is the 1-based position of the SNP.
-    if known.endswith('.gz'):
-        snp_df = pd.read_table(known, compression='gzip', names=names2, dtype={'CHROM': str, 'START': int, 'POS': int})
-    else:
-        snp_df = pd.read_table(known, names=names2, dtype={'CHROM': str, 'START': int, 'POS': int})
-        
-    snp_df['KNOWN'] = 1
-    print(snp_df.head())
-    print(eff_df.head())
-    joined = pd.merge(eff_df, snp_df, how='left', on=['CHROM', 'POS'])
-    print("Number of known SNPs filtered out: {}".format(
-        joined[joined['KNOWN']==1].shape[0])
-    )
-    keep = joined[joined['KNOWN'] != 1]
-    if keep.shape[0] == 0:
-        print("No edits found for {}".format(infile))
-        return 0
-    del keep['KNOWN']
+    # Note: Increasing chunksize by 10 times made it slower in a test
+    chunksize = 1000000
+    names1 = ['CHROM', 'POS', 'ID', 'REF', 'ALT', 'QUAL', 'FILTER', 'INFO', 'FORMAT', '.']
+    data_df = pd.read_csv(
+            infile,
+            delimiter='\t', 
+            comment='#', 
+            header=None, 
+            names=names1, 
+            dtype=str)
 
+    names2 = ['CHROM', 'START', 'POS']
+    filter_chunks = pd.read_csv(
+            known,
+            chunksize=chunksize, 
+            delimiter='\t', 
+            header=None, 
+            names=names2, 
+            dtype=str)
+
+    for flt in filter_chunks:
+        # brian's filter does not support multiprocessing
+        # potentially we can use a filter to return a vector that marks which record was filtered or not (bool) by the
+        # provided filter and we can do a numpy logical_or to reduce it. 
+        data_df = apply_filter(data_df, flt)
+
+
+#    names1 = [
+#        'CHROM', 'POS', 'ID', 'REF', 'ALT', 'QUAL', 'FILTER', 'INFO', 'FORMAT',
+#        '.'
+#    ]
+#    eff_df = pd.read_table(infile, comment='#', names=names1,
+#                           dtype={'QUAL': str})
+#
+#    names2 = ['CHROM', 'START',
+#              'POS']  # POS is the 1-based position of the SNP.
+#    if known.endswith('.gz'):
+#        snp_df = pd.read_table(known, compression='gzip', names=names2)
+#    else:
+#        snp_df = pd.read_table(known, names=names2)
+#
+#    snp_df['KNOWN'] = 1
+#    joined = pd.merge(eff_df, snp_df, how='left', on=['CHROM', 'POS'])
+#
+#    # print("Number of known SNPs filtered out: {}".format(
+#    #     joined[joined['KNOWN']==1].shape[0])
+#    # )
+#    keep = joined[joined['KNOWN'] != 1]
+#
+#    del keep['KNOWN']
+#
     with open(outfile, 'a') as o:
-        keep.to_csv(o, header=False, index=False, sep='\t')
+        data_df.to_csv(o, header=False, index=False, sep='\t')
 
 
 def main(argv=None):  # IGNORE:C0111
@@ -180,7 +213,7 @@ USAGE
         return 0
     except KeyboardInterrupt:
         return 0
-    except Exception as e:
+    except Exception, e:
         if DEBUG or TESTRUN:
             raise e
         indent = len(program_name) * " "
